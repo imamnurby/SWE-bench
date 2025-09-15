@@ -15,6 +15,9 @@ class DetailedCallGraphTracker:
         self.output_file = output_file
         self.source_cache = {}  # Cache for source file contents
         
+        # Stack of variable dictionaries, one per function call
+        self.function_variables_stack = []
+        
         # Standard library modules to exclude
         self.stdlib_modules = {
             'abc', '_aix_support', '_android_support', 'annotationlib', 'antigravity', 
@@ -94,56 +97,43 @@ class DetailedCallGraphTracker:
         except (IOError, OSError, UnicodeDecodeError):
             return ""
     
-    def analyze_line_variables(self, source_line: str, frame) -> tuple[Dict[str, Any], Dict[str, Any]]:
-        """Analyze which variables are read and written in a line using AST"""
-        vars_read = {}
-        vars_written = {}
-        
+    # AFTER
+    def get_vars_involved_in_line(self, source_line: str) -> List[str]:
+        """Get all variable names involved in a line using AST"""
+        vars_involved = set()
+        stripped_line = source_line.strip()
+
+        if not stripped_line:
+            return []
+
+        # --- Start of new logic ---
+        # Heuristic: If a line ends with a colon, it's likely an incomplete
+        # compound statement (if, for, def, etc.). We append 'pass' to make it
+        # syntactically valid for ast.parse.
+        code_to_parse = stripped_line
+        if stripped_line.endswith(':'):
+            code_to_parse += "\n    pass"
+        # --- End of new logic ---
+
         try:
-            # Parse the line as an AST
-            tree = ast.parse(source_line.strip(), mode='eval')
+            # We now only need to parse in 'exec' mode, as it handles both
+            # simple statements and the compound ones we've just fixed.
+            tree = ast.parse(code_to_parse, mode='exec')
             
-            # Extract variable names from the AST
-            read_vars = set()
-            written_vars = set()
-            
+            # Extract all variable names from the AST
             for node in ast.walk(tree):
                 if isinstance(node, ast.Name):
-                    if isinstance(node.ctx, ast.Load):
-                        read_vars.add(node.id)
-                    elif isinstance(node.ctx, ast.Store):
-                        written_vars.add(node.id)
+                    # We should only care about variables being loaded (used),
+                    # not stored (assigned) or deleted, but for simplicity,
+                    # we'll still grab all names.
+                    vars_involved.add(node.id)
                         
         except SyntaxError:
-            # If it's not a valid expression, try as a statement
-            try:
-                tree = ast.parse(source_line.strip(), mode='exec')
-                read_vars = set()
-                written_vars = set()
-                
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Name):
-                        if isinstance(node.ctx, ast.Load):
-                            read_vars.add(node.id)
-                        elif isinstance(node.ctx, ast.Store):
-                            written_vars.add(node.id)
-            except SyntaxError:
-                # If we still can't parse it, return empty sets
-                read_vars = set()
-                written_vars = set()
+            # If our heuristic fails and the code is still invalid,
+            # we fall back to returning an empty list.
+            pass
         
-        # Get actual values from frame locals and globals
-        frame_vars = {**frame.f_globals, **frame.f_locals}
-        
-        for var_name in read_vars:
-            if var_name in frame_vars:
-                vars_read[var_name] = self.serialize_value(frame_vars[var_name])
-                
-        for var_name in written_vars:
-            if var_name in frame_vars:
-                vars_written[var_name] = self.serialize_value(frame_vars[var_name])
-                
-        return vars_read, vars_written
+        return list(vars_involved)
     
     def serialize_value(self, value: Any) -> Any:
         """Serialize a value for JSON output"""
@@ -217,6 +207,28 @@ class DetailedCallGraphTracker:
             'line_no': line_no
         }
     
+    def update_function_variables(self, frame):
+        """Update the current function's variable dictionary with local variables"""
+        if not self.function_variables_stack:
+            return
+            
+        current_func_vars = self.function_variables_stack[-1]
+        
+        # Get the function's local variables (excluding globals and builtins)
+        code = frame.f_code
+        local_var_names = code.co_varnames
+        
+        # Update only local variables
+        for var_name in local_var_names:
+            if var_name in frame.f_locals:
+                current_func_vars[var_name] = self.serialize_value(frame.f_locals[var_name])
+    
+    def get_current_seen_variables(self) -> Dict[str, Any]:
+        """Get a copy of the current function's seen variables"""
+        if self.function_variables_stack:
+            return dict(self.function_variables_stack[-1])
+        return {}
+    
     def add_trace_entry(self, event_type: str, frame, **kwargs):
         """Add a structured trace entry"""
         filename = frame.f_code.co_filename
@@ -249,6 +261,10 @@ class DetailedCallGraphTracker:
             # Get function parameters
             parameters = self.get_function_parameters(frame)
             
+            # Initialize function variables dictionary with parameters
+            func_vars = dict(parameters)
+            self.function_variables_stack.append(func_vars)
+            
             # Record the relationship for call graph
             if self.call_stack:
                 caller_info = self.call_stack[-1]
@@ -271,6 +287,10 @@ class DetailedCallGraphTracker:
             if self.call_stack:
                 returned_func = self.call_stack.pop()
                 
+                # Remove the function's variable dictionary
+                if self.function_variables_stack:
+                    self.function_variables_stack.pop()
+                
                 # Add return trace
                 self.add_trace_entry(
                     'Return',
@@ -279,16 +299,23 @@ class DetailedCallGraphTracker:
                 )
                 
         elif event == 'line':
-            # Get source line and analyze variables
+            # First, update function variables based on current frame state
+            # This captures any variables assigned by the previous line
+            self.update_function_variables(frame)
+            
+            # Get source line and variables involved
             source_line = self.get_source_line(frame.f_code.co_filename, frame.f_lineno)
-            vars_read, vars_written = self.analyze_line_variables(source_line, frame)
+            vars_involved = self.get_vars_involved_in_line(source_line)
+            
+            # Get current seen variables (after updating from previous line)
+            seen_variables = self.get_current_seen_variables()
             
             # Add line execution trace
             self.add_trace_entry(
                 'Line',
                 frame,
-                vars_read=vars_read,
-                vars_written=vars_written
+                vars_involved=vars_involved,
+                seen_variables=seen_variables
             )
                 
         elif event == 'exception':
@@ -334,7 +361,7 @@ class DetailedCallGraphTracker:
             'unique_functions': len(self.call_graph),
             'output_file': self.output_file
         }
-
+        
 # Example usage:
 if __name__ == "__main__":
     # Example function to trace
