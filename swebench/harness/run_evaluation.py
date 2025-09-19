@@ -153,8 +153,42 @@ def run_instance(
             test_spec, client, run_id, logger, rm_image, force_rebuild
         )
         container.start()
+        breakpoint()
         logger.info(f"Container for {instance_id} started: {container.id}")
 
+        # APPLY THE TEST PATCH
+        eval_file = Path(log_dir / "eval.sh")
+        eval_file.write_text(test_spec.eval_script)
+        logger.info(
+            f"Eval script for {instance_id} written to {eval_file}; copying to container..."
+        )
+        copy_to_container(container, eval_file, PurePosixPath("/eval.sh"))
+        
+        
+        # RUN THE BUGGY CODE
+        buggy_test_output, buggy_timed_out, buggy_total_runtime = exec_run_with_timeout(
+            container, "/bin/bash /eval.sh", timeout
+        )
+        
+        # SAVE THE OUTPUT OF THE BUGGY RUN        
+        test_output_path = log_dir / f"{LOG_TEST_OUTPUT}_buggy"
+        logger.info(f"Test runtime (BUGGY): {buggy_total_runtime:_.2f} seconds")
+        with open(test_output_path, "w") as f:
+            f.write(buggy_test_output)
+            logger.info(f"Test output (BUGGY) for {instance_id} written to {test_output_path}")
+            if buggy_timed_out:
+                f.write(f"\n\nTimeout error: {timeout} seconds exceeded.")
+                raise EvaluationError(
+                    instance_id,
+                    f"Test (BUGGY) timed out after {timeout} seconds.",
+                    logger,
+                )
+        breakpoint()
+        # collect the output of the run, save it to a file
+        
+        # collect the traces also when running the test cases
+        
+        
         # Copy model prediction as patch file to container
         patch_file = Path(log_dir / "patch.diff")
         patch_file.write_text(pred[KEY_PREDICTION] or "")
@@ -195,20 +229,13 @@ def run_instance(
         )
         logger.info(f"Git diff before:\n{git_diff_output_before}")
 
-        eval_file = Path(log_dir / "eval.sh")
-        eval_file.write_text(test_spec.eval_script)
-        logger.info(
-            f"Eval script for {instance_id} written to {eval_file}; copying to container..."
-        )
-        copy_to_container(container, eval_file, PurePosixPath("/eval.sh"))
-
         # Run eval script, write output to logs
         test_output, timed_out, total_runtime = exec_run_with_timeout(
             container, "/bin/bash /eval.sh", timeout
         )
         test_output_path = log_dir / LOG_TEST_OUTPUT
         logger.info(f"Test runtime: {total_runtime:_.2f} seconds")
-        with open(test_output_path, "w") as f:
+        with open(test_output_path, "a") as f:
             f.write(test_output)
             logger.info(f"Test output for {instance_id} written to {test_output_path}")
             if timed_out:
@@ -540,15 +567,9 @@ def main(
     else:
         # build environment images + run instances
         if namespace is None and not rewrite_reports:
-            build_env_images(
-                client,
-                dataset,
-                force_rebuild,
-                max_workers,
-                namespace,
-                instance_image_tag,
-                env_image_tag,
-            )
+            print("X")
+            build_env_images(client, dataset, force_rebuild, max_workers)
+        breakpoint()
         run_instances(
             predictions,
             dataset,
