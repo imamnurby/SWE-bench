@@ -5,7 +5,7 @@ import json
 from collections import defaultdict
 from typing import Dict, Any, List, Optional, Set
 
-class DetailedCallGraphTracker:
+class ExecutionTracer:
     def __init__(self, output_file: str = "trace.jsonl"):
         self.call_stack = []
         self.call_graph = defaultdict(set)
@@ -359,12 +359,130 @@ class DetailedCallGraphTracker:
             'event_breakdown': dict(event_counts),
             'max_call_depth': self.max_depth,
             'unique_functions': len(self.call_graph),
-            'output_file': self.output_file
+            'output_file': self.output_file,
+            'call_graph': dict(self.call_graph),  # Add this
+            'call_counts': dict(self.call_counts)  # And this
         }
         
 # Example usage:
+# if __name__ == "__main__":
+    # # Example function to trace
+    # def example_function(x, y):
+    #     a = x + y
+    #     b = a * 2
+    #     if b > 10:
+    #         result = b - 5
+    #     else:
+    #         result = b + 5
+    #     return result
+    
+    # def another_function():
+    #     values = [1, 2, 3, 4, 5]
+    #     total = 0
+    #     for val in values:
+    #         total += val
+    #     return total
+    
+    # # Create and start the tracker
+    # tracker = DetailedCallGraphTracker("example_trace.jsonl")
+    # tracker.start_tracing()
+    
+    # try:
+    #     # Run some code to trace
+    #     result1 = example_function(3, 7)
+    #     result2 = another_function()
+    #     print(f"Results: {result1}, {result2}")
+        
+    # finally:
+    #     # Always stop tracing and save results
+    #     tracker.stop_tracing()
+    #     tracker.save_trace()
+        
+    #     # Print summary
+    #     summary = tracker.get_trace_summary()
+    #     print("\nTrace Summary:")
+    #     for key, value in summary.items():
+    #         print(f"  {key}: {value}")
+    
+    
+    # --- NEW TEST CASE STARTS HERE ---
+import logging
+class FactorialCalculator:
+    """
+    A class to demonstrate tracing of methods, recursion, and object state.
+    """
+    def __init__(self, use_cache=True):
+        self.cache = {} if use_cache else None
+        # Add a non-serializable attribute to test serialization fallback
+        self.logger = logging.getLogger(__name__)
+
+    def calculate(self, n):
+        """Public method to start the factorial calculation."""
+        if not isinstance(n, int) or n < 0:
+            raise ValueError("Factorial is only defined for non-negative integers")
+        
+        # This call to a private, recursive method will be traced
+        return self._recursive_factorial(n)
+
+    def _recursive_factorial(self, n):
+        """Private recursive method to compute factorial."""
+        if n == 0:
+            return 1
+        
+        # Check cache (tests conditional logic and object state access)
+        if self.cache is not None and n in self.cache:
+            return self.cache[n]
+            
+        # Recursive step
+        result = n * self._recursive_factorial(n - 1)
+        
+        # Store in cache (tests object state modification)
+        if self.cache is not None:
+            self.cache[n] = result
+            
+        return result
+
+def run_recursive_class_test():
+    """
+    Sets up and runs a test case involving a class with a recursive method,
+    and also tests exception tracing.
+    """
+    print("--- Running Recursive Class Test Case ---")
+    
+
+    
+    try:
+        # Create an instance of the class (will trace __init__)
+        calculator = FactorialCalculator()
+        
+        # Call the method that triggers recursion
+        result = calculator.calculate(5)
+        print(f"Factorial of 5 is: {result}")
+        
+        # Call it again to see caching behavior in the trace
+        result_cached = calculator.calculate(5)
+        print(f"Factorial of 5 (cached) is: {result_cached}")
+
+        # Test the exception tracing path
+        try:
+            calculator.calculate(-1)
+        except ValueError as e:
+            print(f"Caught expected exception: {e}")
+
+    finally:
+        tracker.stop_tracing()
+        tracker.save_trace()
+        
+        summary = tracker.get_trace_summary()
+        print("\nTrace Summary for Recursive Class Test:")
+        for key, value in summary.items():
+            print(f"  {key}: {value}")
+        print("----------------------------------------\n")
+
+
+# --- Main execution block ---
 if __name__ == "__main__":
-    # Example function to trace
+    # Original example function to trace
     def example_function(x, y):
         a = x + y
         b = a * 2
@@ -381,23 +499,27 @@ if __name__ == "__main__":
             total += val
         return total
     
-    # Create and start the tracker
-    tracker = DetailedCallGraphTracker("example_trace.jsonl")
+    # Run the original example
+    # print("--- Running Original Example Test Case ---")
+    tracker = ExecutionTracer("example_trace.jsonl")
     tracker.start_tracing()
     
     try:
-        # Run some code to trace
-        result1 = example_function(3, 7)
-        result2 = another_function()
-        print(f"Results: {result1}, {result2}")
+        run_recursive_class_test()
+    
+    #     result1 = example_function(3, 7)
+    #     result2 = another_function()
+    #     print(f"Results: {result1}, {result2}")
         
     finally:
-        # Always stop tracing and save results
         tracker.stop_tracing()
         tracker.save_trace()
         
-        # Print summary
         summary = tracker.get_trace_summary()
-        print("\nTrace Summary:")
+        print("\nTrace Summary for Original Example:")
         for key, value in summary.items():
             print(f"  {key}: {value}")
+        print("--------------------------------------\n")
+    
+    # Run the new, more complex test case
+    
